@@ -198,7 +198,7 @@ void disableRawMode(int fd) {
 /* Called at exit to avoid remaining in raw mode. */
 void editorAtExit(void) {
     disableRawMode(STDIN_FILENO);
-    write(STDOUT_FILENO,"\e[?1049l",8);
+    write(STDOUT_FILENO,"\x1b[?1049l",8);
 }
 
 /* Raw mode: 1960 magic shit. */
@@ -1283,7 +1283,7 @@ int main(int argc, char **argv) {
     editorSetStatusMessage(
         "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
 
-    write(STDOUT_FILENO,"\e[?1049h",8);
+    write(STDOUT_FILENO,"\x1b[?1049h",8);
     while(1) {
         editorRefreshScreen();
         editorProcessKeypress(STDIN_FILENO);
