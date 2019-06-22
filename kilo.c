@@ -67,7 +67,7 @@
 struct editorSyntax {
     char **filematch;
     char **keywords;
-    char singleline_comment_start[2];
+    char singleline_comment_start[3];
     char multiline_comment_start[3];
     char multiline_comment_end[3];
     int flags;
@@ -372,7 +372,7 @@ void editorUpdateSyntax(erow *row) {
 
     if (E.syntax == NULL) return; /* No syntax, everything is HL_NORMAL. */
 
-    int i, prev_sep, in_string, in_comment;
+    int i, in_string, in_comment;
     char *p;
     char **keywords = E.syntax->keywords;
     char *scs = E.syntax->singleline_comment_start;
@@ -382,130 +382,137 @@ void editorUpdateSyntax(erow *row) {
     /* Point to the first non-space char. */
     p = row->render;
     i = 0; /* Current char offset */
-    while(*p && isspace(*p)) {
-        p++;
-        i++;
-    }
-    prev_sep = 1; /* Tell the parser if 'i' points to start of word. */
+
     in_string = 0; /* Are we inside "" or '' ? */
     in_comment = 0; /* Are we inside multi-line comment? */
 
     /* If the previous line has an open comment, this line starts
      * with an open comment state. */
-    if (row->idx > 0 && editorRowHasOpenComment(&E.row[row->idx-1]))
+    if (row->idx > 0 && E.row[row->idx-1].hl_oc)
         in_comment = 1;
 
     while(*p) {
-        /* Handle // comments. */
-        if (prev_sep && *p == scs[0] && *(p+1) == scs[1]) {
-            /* From here to end is a comment */
-            memset(row->hl+i,HL_COMMENT,row->rsize-i);
-            return;
-        }
-
-        /* Handle multi line comments. */
         if (in_comment) {
             row->hl[i] = HL_MLCOMMENT;
-            if (*p == mce[0] && *(p+1) == mce[1]) {
+            if (!strncmp(p,mce,strlen(mce))) {
                 row->hl[i+1] = HL_MLCOMMENT;
                 p += 2; i += 2;
                 in_comment = 0;
-                prev_sep = 1;
                 continue;
             } else {
-                prev_sep = 0;
                 p++; i++;
                 continue;
             }
-        } else if (*p == mcs[0] && *(p+1) == mcs[1]) {
-            row->hl[i] = HL_MLCOMMENT;
-            row->hl[i+1] = HL_MLCOMMENT;
-            p += 2; i += 2;
-            in_comment = 1;
-            prev_sep = 0;
-            continue;
         }
 
-        /* Handle "" and '' */
-        if (in_string) {
-            row->hl[i] = HL_STRING;
-            if (*p == '\\') {
-                row->hl[i+1] = HL_STRING;
+        if (*p == '/') {
+            if (!strncmp(p,scs,strlen(scs))) {
+                /* Handle // comments. */
+                /* From here to end is a comment */
+                memset(row->hl+i,HL_COMMENT,row->rsize-i);
+                return;
+            } else if (!strncmp(p,mcs,strlen(mcs))) {
+                /* Handle multi line comments. */
+                row->hl[i] = HL_MLCOMMENT;
+                row->hl[i+1] = HL_MLCOMMENT;
                 p += 2; i += 2;
-                prev_sep = 0;
+                in_comment = 1;
                 continue;
             }
-            if (*p == in_string) in_string = 0;
-            p++; i++;
-            continue;
-        } else {
-            if (*p == '"' || *p == '\'') {
-                in_string = *p;
-                row->hl[i] = HL_STRING;
+        }
+
+        switch(*p) {
+        case 'a' ... 'z':
+        case 'A' ... 'Z':
+        case '_':
+            {
+                char *s_p = p;
+                int s_i = i;
                 p++; i++;
-                prev_sep = 0;
-                continue;
+                while(*p) {
+                    if(is_separator(*p))
+                        break;
+                    p++; i++;
+                }
+
+                /* Handle keywords and lib calls */
+                for (int j = 0; keywords[j]; j++) {
+                    int klen = strlen(keywords[j]);
+                    int kw2 = keywords[j][klen-1] == '|';
+                    if (kw2) klen--;
+
+                    if (!strncmp(s_p,keywords[j],klen) &&
+                        is_separator(*(s_p+klen)))
+                    {
+                        /* Keyword */
+                        memset(row->hl+s_i,kw2 ? HL_KEYWORD2 : HL_KEYWORD1,klen);
+                        break;
+                    }
+                }
             }
-        }
-
-        /* Handle non printable chars. */
-        if (!isprint(*p)) {
-            row->hl[i] = HL_NONPRINT;
+            break;
+        case '"':
+        case '\'':
+            /* Handle "" and '' */
+            in_string = *p;
+            row->hl[i] = HL_STRING;
             p++; i++;
-            prev_sep = 0;
-            continue;
-        }
-
-        /* Handle numbers */
-        if ((isdigit(*p) && (prev_sep || row->hl[i-1] == HL_NUMBER)) ||
-            (*p == '.' && i >0 && row->hl[i-1] == HL_NUMBER)) {
-            row->hl[i] = HL_NUMBER;
-            p++; i++;
-            prev_sep = 0;
-            continue;
-        }
-
-        /* Handle separators */
-        if (is_separator(*p)) {
-            row->hl[i] = HL_NORMAL;
-        }
-
-        /* Handle keywords and lib calls */
-        if (prev_sep) {
-            int j;
-            for (j = 0; keywords[j]; j++) {
-                int klen = strlen(keywords[j]);
-                int kw2 = keywords[j][klen-1] == '|';
-                if (kw2) klen--;
-
-                if (!memcmp(p,keywords[j],klen) &&
-                    is_separator(*(p+klen)))
-                {
-                    /* Keyword */
-                    memset(row->hl+i,kw2 ? HL_KEYWORD2 : HL_KEYWORD1,klen);
-                    p += klen;
-                    i += klen;
+            if (in_string) {
+                while(*p) {
+                    row->hl[i] = HL_STRING;
+                    if (*p == '\\') {
+                        row->hl[i+1] = HL_STRING;
+                        p += 2; i += 2;
+                    } else if (*p == in_string) {
+                        in_string = 0;
+                        p++; i++;
+                        break;
+                    } else {
+                        p++; i++;
+                    }
+                }
+            }
+            break;
+        case '0' ... '9':
+            /* Handle numbers */
+            while(*p) {
+                if (isdigit(*p) || (*p == '.' )) {
+                    row->hl[i] = HL_NUMBER;
+                    p++; i++;
+                } else {
                     break;
                 }
             }
-            if (keywords[j] != NULL) {
-                prev_sep = 0;
-                continue; /* We had a keyword match */
+            break;
+        default:
+            /* Handle non printable chars. */
+            if (!isprint(*p)) {
+                row->hl[i] = HL_NONPRINT;
             }
-        }
 
-        /* Not special chars */
-        prev_sep = is_separator(*p);
-        p++; i++;
+            /* Handle separators */
+            if (is_separator(*p)) {
+                row->hl[i] = HL_NORMAL;
+            }
+            p++; i++;
+            break;
+        }
     }
 
     /* Propagate syntax change to the next row if the open commen
      * state changed. This may recursively affect all the following rows
      * in the file. */
     int oc = editorRowHasOpenComment(row);
-    if (row->hl_oc != oc && row->idx+1 < E.numrows)
-        editorUpdateSyntax(&E.row[row->idx+1]);
-    row->hl_oc = oc;
+
+    if (row->size == 0 && row->idx > 0 && E.row[row->idx-1].hl_oc) {
+        oc = 1;
+    }
+
+    if (row->hl_oc != oc) {
+        row->hl_oc = oc;
+        if (row->idx+1 < E.numrows)
+            editorUpdateSyntax(&E.row[row->idx+1]);
+    }
 }
 
 /* Maps syntax highlight token types to terminal colors. */
@@ -584,7 +591,11 @@ void editorInsertRow(int at, char *s, size_t len) {
     E.row[at].chars = malloc(len+1);
     memcpy(E.row[at].chars,s,len+1);
     E.row[at].hl = NULL;
-    E.row[at].hl_oc = 0;
+    if(at > 0 && E.row[at-1].hl_oc)
+        E.row[at].hl_oc = 1;
+    else
+        E.row[at].hl_oc = 0;
+    
     E.row[at].render = NULL;
     E.row[at].rsize = 0;
     E.row[at].idx = at;
