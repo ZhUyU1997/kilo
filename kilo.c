@@ -802,6 +802,7 @@ int editorOpen(char *filename) {
             perror("Opening file");
             exit(1);
         }
+        editorInsertRow(0,"",0);
         return 1;
     }
 
@@ -1152,11 +1153,37 @@ void editorMoveCursor(int key) {
         }
         break;
     case ARROW_DOWN:
-        if (filerow < E.numrows) {
+        if (filerow < E.numrows - 1) {
             if (E.cy == E.screenrows-1) {
                 E.rowoff++;
             } else {
                 E.cy += 1;
+            }
+        }
+        break;
+    case HOME_KEY:
+        {
+            char *p = row->chars;
+            int x = 0;
+            while(*p && isblank(*p)) {
+                x++;p++;
+            }
+                
+            E.coloff = 0;
+            E.cx = x;
+
+            if (E.cx > E.screencols-1) {
+                E.coloff = E.cx;
+                E.cx = 0;
+            }
+        }
+        break;
+    case END_KEY:
+        if (E.rowoff + E.cy < E.numrows) {
+            E.cx = row->size;
+            if (E.cx > E.screencols-1) {
+                E.coloff = E.cx-E.screencols+1;
+                E.cx = E.screencols-1;
             }
         }
         break;
@@ -1226,7 +1253,8 @@ void editorProcessKeypress(int fd) {
                                             ARROW_DOWN);
         }
         break;
-
+    case HOME_KEY:
+    case END_KEY:
     case ARROW_UP:
     case ARROW_DOWN:
     case ARROW_LEFT:
