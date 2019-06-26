@@ -551,6 +551,33 @@ void editorSelectSyntaxHighlight(char *filename) {
 
 /* ======================= Editor rows implementation ======================= */
 
+void fixCursorPostion() {
+    if (E.cy >= E.numrows)
+        E.cy = E.numrows - 1;
+    if (E.cy < 0)
+        E.cy = 0;
+
+    if (E.cy - E.rowoff > E.screenrows - 1 || E.cy < E.rowoff) {
+        if (E.cy > E.screenrows - 1)
+            E.rowoff = E.cy - E.screenrows + 1;
+        else
+            E.rowoff = 0;
+    }
+
+    erow *row = &E.row[E.cy];
+    if(E.cx > row->size)
+        E.cx = row->size;
+    if(E.cx < 0)
+        E.cx = 0;
+    int off = getRealOffset(row,E.cx);
+    if (off - E.coloff > E.screencols - 1 || off < E.coloff) {
+        if (off > E.screencols - 1)
+            E.coloff = off - E.screencols + 1;
+        else
+            E.coloff = 0;
+    }
+}
+
 /* Update the rendered version and the syntax highlight of a row. */
 void editorUpdateRow(erow *row) {
     int tabs = 0, nonprint = 0, j, idx;
@@ -566,7 +593,7 @@ void editorUpdateRow(erow *row) {
     for (j = 0; j < row->size; j++) {
         if (row->chars[j] == TAB) {
             row->render[idx++] = ' ';
-            while((idx+1) % 8 != 0) row->render[idx++] = ' ';
+            while((idx) % 8 != 0) row->render[idx++] = ' ';
         } else {
             row->render[idx++] = row->chars[j];
         }
@@ -696,9 +723,9 @@ void editorRowDelChar(erow *row, int at) {
 
 /* Insert the specified char at the current prompt position. */
 void editorInsertChar(int c) {
-    int filerow = E.rowoff+E.cy;
-    int filecol = E.coloff+E.cx;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
+    int filerow = E.cy;
+    int filecol = E.cx;
+    erow *row = &E.row[filerow];
 
     /* If the row where the cursor is currently located does not exist in our
      * logical representaion of the file, add enough empty rows as needed. */
@@ -708,19 +735,17 @@ void editorInsertChar(int c) {
     }
     row = &E.row[filerow];
     editorRowInsertChar(row,filecol,c);
-    if (E.cx == E.screencols-1)
-        E.coloff++;
-    else
-        E.cx++;
+    E.cx++;
+    fixCursorPostion();
     E.dirty++;
 }
 
 /* Inserting a newline is slightly complex as we have to handle inserting a
  * newline in the middle of a line, splitting the line as needed. */
 void editorInsertNewline(void) {
-    int filerow = E.rowoff+E.cy;
-    int filecol = E.coloff+E.cx;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
+    int filerow = E.cy;
+    int filecol = E.cx;
+    erow *row = &E.row[filerow];
 
     if (!row) {
         if (filerow == E.numrows) {
@@ -743,20 +768,16 @@ void editorInsertNewline(void) {
         editorUpdateRow(row);
     }
 fixcursor:
-    if (E.cy == E.screenrows-1) {
-        E.rowoff++;
-    } else {
-        E.cy++;
-    }
+    E.cy++;
     E.cx = 0;
-    E.coloff = 0;
+    fixCursorPostion();
 }
 
 /* Delete the char at the current prompt position. */
 void editorDelChar() {
-    int filerow = E.rowoff+E.cy;
-    int filecol = E.coloff+E.cx;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
+    int filerow = E.cy;
+    int filecol = E.cx;
+    erow *row = &E.row[filerow];
 
     if (!row || (filecol == 0 && filerow == 0)) return;
     if (filecol == 0) {
@@ -766,23 +787,13 @@ void editorDelChar() {
         editorRowAppendString(&E.row[filerow-1],row->chars,row->size);
         editorDelRow(filerow);
         row = NULL;
-        if (E.cy == 0)
-            E.rowoff--;
-        else
-            E.cy--;
+        E.cy--;
         E.cx = filecol;
-        if (E.cx >= E.screencols) {
-            int shift = (E.screencols-E.cx)+1;
-            E.cx -= shift;
-            E.coloff += shift;
-        }
     } else {
         editorRowDelChar(row,filecol-1);
-        if (E.cx == 0 && E.coloff)
-            E.coloff--;
-        else
-            E.cx--;
+        E.cx--;
     }
+    fixCursorPostion();
     if (row) editorUpdateRow(row);
     E.dirty++;
 }
@@ -871,6 +882,15 @@ void abFree(struct abuf *ab) {
     free(ab->b);
 }
 
+int getRealOffset(erow *row, int index) {
+    int off = 0;
+    for (int j = 0; j < index; j++) {
+        if (j < row->size && row->chars[j] == TAB) off += 7-((off)%8);
+        off++;
+    }
+    return off;
+}
+
 /* This function writes the whole screen using VT100 escape characters
  * starting from the logical state of the editor in the global state 'E'. */
 void editorRefreshScreen(void) {
@@ -951,7 +971,7 @@ void editorRefreshScreen(void) {
     int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
         E.filename, E.numrows, E.dirty ? "(modified)" : "");
     int rlen = snprintf(rstatus, sizeof(rstatus),
-        "%d/%d",E.rowoff+E.cy+1,E.numrows);
+        "%d/%d",E.cy+1,E.numrows);
     if (len > E.screencols) len = E.screencols;
     abAppend(&ab,status,len);
     while(len < E.screencols) {
@@ -974,17 +994,11 @@ void editorRefreshScreen(void) {
     /* Put cursor at its current position. Note that the horizontal position
      * at which the cursor is displayed may be different compared to 'E.cx'
      * because of TABs. */
-    int j;
-    int cx = 1;
-    int filerow = E.rowoff+E.cy;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
-    if (row) {
-        for (j = E.coloff; j < (E.cx+E.coloff); j++) {
-            if (j < row->size && row->chars[j] == TAB) cx += 7-((cx)%8);
-            cx++;
-        }
-    }
-    snprintf(buf,sizeof(buf),"\x1b[%d;%dH",E.cy+1,cx);
+
+    erow *row = &E.row[E.cy];
+    int cx = getRealOffset(row, E.cx) - E.coloff + 1;
+
+    snprintf(buf,sizeof(buf),"\x1b[%d;%dH",E.cy - E.rowoff + 1,cx);
     abAppend(&ab,buf,strlen(buf));
     abAppend(&ab,"\x1b[?25h",6); /* Show cursor. */
     write(STDOUT_FILENO,ab.b,ab.len);
@@ -1065,9 +1079,9 @@ void editorFind(int fd) {
                 current += find_next;
                 if (current == -1) current = E.numrows-1;
                 else if (current == E.numrows) current = 0;
-                match = strstr(E.row[current].render,query);
+                match = strstr(E.row[current].chars,query);
                 if (match) {
-                    match_offset = match-E.row[current].render;
+                    match_offset = match-E.row[current].chars;
                     break;
                 }
             }
@@ -1083,18 +1097,11 @@ void editorFind(int fd) {
                     saved_hl_line = current;
                     saved_hl = malloc(row->rsize);
                     memcpy(saved_hl,row->hl,row->rsize);
-                    memset(row->hl+match_offset,HL_MATCH,qlen);
+                    memset(row->hl+getRealOffset(row,match_offset),HL_MATCH,qlen);
                 }
-                E.cy = 0;
-                E.cx = match_offset;
-                E.rowoff = current;
-                E.coloff = 0;
-                /* Scroll horizontally as needed. */
-                if (E.cx > E.screencols) {
-                    int diff = E.cx - E.screencols;
-                    E.cx -= diff;
-                    E.coloff += diff;
-                }
+                E.cy = current;
+                E.cx = match_offset + qlen;
+                fixCursorPostion();
             }
         }
     }
@@ -1104,62 +1111,30 @@ void editorFind(int fd) {
 
 /* Handle cursor position change because arrow keys were pressed. */
 void editorMoveCursor(int key) {
-    int filerow = E.rowoff+E.cy;
-    int filecol = E.coloff+E.cx;
-    int rowlen;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
+    erow *row = &E.row[E.cy];
 
     switch(key) {
     case ARROW_LEFT:
-        if (E.cx == 0) {
-            if (E.coloff) {
-                E.coloff--;
-            } else {
-                if (filerow > 0) {
-                    E.cy--;
-                    E.cx = E.row[filerow-1].size;
-                    if (E.cx > E.screencols-1) {
-                        E.coloff = E.cx-E.screencols+1;
-                        E.cx = E.screencols-1;
-                    }
-                }
-            }
+        if (E.cx == 0 && E.cy) {
+            E.cy--;
+            E.cx = E.row[E.cy - 1].size;
         } else {
-            E.cx -= 1;
+            E.cx--;
         }
         break;
     case ARROW_RIGHT:
-        if (row && filecol < row->size) {
-            if (E.cx == E.screencols-1) {
-                E.coloff++;
-            } else {
-                E.cx += 1;
-            }
-        } else if (row && filecol == row->size) {
+        if (E.cx == row->size && E.cy < E.numrows - 1) {
             E.cx = 0;
-            E.coloff = 0;
-            if (E.cy == E.screenrows-1) {
-                E.rowoff++;
-            } else {
-                E.cy += 1;
-            }
+            E.cy++;
+        } else if (E.cx < row->size) {
+            E.cx++;
         }
         break;
     case ARROW_UP:
-        if (E.cy == 0) {
-            if (E.rowoff) E.rowoff--;
-        } else {
-            E.cy -= 1;
-        }
+        E.cy--;
         break;
     case ARROW_DOWN:
-        if (filerow < E.numrows - 1) {
-            if (E.cy == E.screenrows-1) {
-                E.rowoff++;
-            } else {
-                E.cy += 1;
-            }
-        }
+        E.cy++; 
         break;
     case HOME_KEY:
         {
@@ -1168,38 +1143,15 @@ void editorMoveCursor(int key) {
             while(*p && isblank(*p)) {
                 x++;p++;
             }
-                
-            E.coloff = 0;
             E.cx = x;
-
-            if (E.cx > E.screencols-1) {
-                E.coloff = E.cx;
-                E.cx = 0;
-            }
         }
         break;
     case END_KEY:
-        if (E.rowoff + E.cy < E.numrows) {
-            E.cx = row->size;
-            if (E.cx > E.screencols-1) {
-                E.coloff = E.cx-E.screencols+1;
-                E.cx = E.screencols-1;
-            }
-        }
+        E.cx = row->size;
         break;
     }
-    /* Fix cx if the current line has not enough chars. */
-    filerow = E.rowoff+E.cy;
-    filecol = E.coloff+E.cx;
-    row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
-    rowlen = row ? row->size : 0;
-    if (filecol > rowlen) {
-        E.cx -= filecol-rowlen;
-        if (E.cx < 0) {
-            E.coloff += E.cx;
-            E.cx = 0;
-        }
-    }
+    
+    fixCursorPostion();
 }
 
 /* Process events arriving from the standard input, which is, the user
