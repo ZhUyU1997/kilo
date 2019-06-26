@@ -1194,10 +1194,6 @@ void editorProcessKeypress(int fd) {
         break;
     case PAGE_UP:
     case PAGE_DOWN:
-        if (c == PAGE_UP && E.cy != 0)
-            E.cy = 0;
-        else if (c == PAGE_DOWN && E.cy != E.screenrows-1)
-            E.cy = E.screenrows-1;
         {
         int times = E.screenrows;
         while(times--)
