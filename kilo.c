@@ -61,6 +61,8 @@
 #define HL_NUMBER 7
 #define HL_MATCH 8      /* Search match. */
 
+#define HL_ATTR_REVERSE (1<<4)
+
 #define HL_HIGHLIGHT_STRINGS (1<<0)
 #define HL_HIGHLIGHT_NUMBERS (1<<1)
 
@@ -105,10 +107,12 @@ struct editorConfig {
     struct editorSyntax *syntax;    /* Current syntax highlight, or NULL. */
 };
 
-static struct editorConfig E;
+static struct editorConfig E = {0};
+char *clipBoard = NULL;
 
 enum KEY_ACTION {
         KEY_NULL = 0,       /* NULL */
+        CTRL_A = 1,         /* Ctrl-a */
         CTRL_C = 3,         /* Ctrl-c */
         CTRL_D = 4,         /* Ctrl-d */
         CTRL_F = 6,         /* Ctrl-f */
@@ -119,6 +123,7 @@ enum KEY_ACTION {
         CTRL_Q = 17,        /* Ctrl-q */
         CTRL_S = 19,        /* Ctrl-s */
         CTRL_U = 21,        /* Ctrl-u */
+        CTRL_V = 22,        /* Ctrl-v */
         ESC = 27,           /* Escape */
         BACKSPACE =  127,   /* Backspace */
         /* The following are just soft codes, not really reported by the
@@ -614,17 +619,10 @@ void editorInsertRow(int at, char *s, size_t len) {
         memmove(E.row+at+1,E.row+at,sizeof(E.row[0])*(E.numrows-at));
         for (int j = at+1; j <= E.numrows; j++) E.row[j].idx++;
     }
+    memset(&E.row[at],0,sizeof(E.row[at]));
     E.row[at].size = len;
     E.row[at].chars = malloc(len+1);
     memcpy(E.row[at].chars,s,len+1);
-    E.row[at].hl = NULL;
-    if(at > 0 && E.row[at-1].hl_oc)
-        E.row[at].hl_oc = 1;
-    else
-        E.row[at].hl_oc = 0;
-    
-    E.row[at].render = NULL;
-    E.row[at].rsize = 0;
     E.row[at].idx = at;
     editorUpdateRow(E.row+at);
     E.numrows++;
@@ -925,14 +923,15 @@ void editorRefreshScreen(void) {
         r = &E.row[filerow];
 
         int len = r->rsize - E.coloff;
-        int current_color = -1;
+        int current_hl = -1;
         if (len > 0) {
             if (len > E.screencols) len = E.screencols;
             char *c = r->render+E.coloff;
             unsigned char *hl = r->hl+E.coloff;
             int j;
             for (j = 0; j < len; j++) {
-                if (hl[j] == HL_NONPRINT) {
+                int v = hl[j] & 0xf ;
+                if (v == HL_NONPRINT) {
                     char sym;
                     abAppend(&ab,"\x1b[7m",4);
                     if (c[j] <= 26)
@@ -941,25 +940,21 @@ void editorRefreshScreen(void) {
                         sym = '?';
                     abAppend(&ab,&sym,1);
                     abAppend(&ab,"\x1b[0m",4);
-                } else if (hl[j] == HL_NORMAL) {
-                    if (current_color != -1) {
-                        abAppend(&ab,"\x1b[39m",5);
-                        current_color = -1;
-                    }
-                    abAppend(&ab,c+j,1);
+                    current_hl = -1;
                 } else {
-                    int color = editorSyntaxToColor(hl[j]);
-                    if (color != current_color) {
+                    int next_hl = hl[j];
+                    if (hl != current_hl) {
                         char buf[16];
-                        int clen = snprintf(buf,sizeof(buf),"\x1b[%dm",color);
-                        current_color = color;
+                        int color = editorSyntaxToColor(v);
+                        int clen = snprintf(buf,sizeof(buf),"\x1b[%d;%dm",(next_hl & HL_ATTR_REVERSE ? 7 : 0),color);
+                        current_hl = next_hl;
                         abAppend(&ab,buf,clen);
                     }
                     abAppend(&ab,c+j,1);
                 }
             }
         }
-        abAppend(&ab,"\x1b[39m",5);
+        abAppend(&ab,"\x1b[37m",5);
         abAppend(&ab,"\x1b[0K",4);
         abAppend(&ab,"\r\n",2);
     }
@@ -971,7 +966,7 @@ void editorRefreshScreen(void) {
     int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
         E.filename, E.numrows, E.dirty ? "(modified)" : "");
     int rlen = snprintf(rstatus, sizeof(rstatus),
-        "%d/%d",E.cy+1,E.numrows);
+        "%d %d/%d",E.cx+1, E.cy+1,E.numrows);
     if (len > E.screencols) len = E.screencols;
     abAppend(&ab,status,len);
     while(len < E.screencols) {
@@ -1097,13 +1092,121 @@ void editorFind(int fd) {
                     saved_hl_line = current;
                     saved_hl = malloc(row->rsize);
                     memcpy(saved_hl,row->hl,row->rsize);
-                    memset(row->hl+getRealOffset(row,match_offset),HL_MATCH,qlen);
+                    int off = getRealOffset(row,match_offset);
+                    for (int i = 0; i < qlen; i++)
+                        row->hl[off + i] ^= HL_ATTR_REVERSE;
                 }
                 E.cy = current;
                 E.cx = match_offset + qlen;
                 fixCursorPostion();
             }
         }
+    }
+}
+
+/* =============================== Select mode ================================ */
+
+void reverseSelectArea(int sx, int sy, int ex, int ey) {
+    int s_cx, s_cy, e_cx, e_cy;
+    int v = ey - sy + (ey - sy == 0 ? ex - sx : 0);
+    if (v >= 0) {
+        s_cx = sx;
+        s_cy = sy;
+        e_cx = ex;
+        e_cy = ey;
+    } else {
+        s_cx = ex;
+        s_cy = ey;
+        e_cx = sx;
+        e_cy = sy;
+    }
+    for (int i = s_cy; i <= e_cy; i++)
+    {
+        erow *row = &E.row[i];
+        int ts = getRealOffset(row, i == s_cy ? s_cx : 0);
+        int te = getRealOffset(row, i == e_cy ? e_cx : E.row[i].size);
+
+        for (int j = ts; j < te; j++)
+        {
+            row->hl[j] ^= HL_ATTR_REVERSE;
+        }
+    }
+}
+
+void editorCopy(int sx, int sy, int ex, int ey) {
+    int s_cx, s_cy, e_cx, e_cy;
+    int v = ey - sy + (ey - sy == 0 ? ex - sx : 0);
+    if (v >= 0) {
+        s_cx = sx;
+        s_cy = sy;
+        e_cx = ex;
+        e_cy = ey;
+    } else {
+        s_cx = ex;
+        s_cy = ey;
+        e_cx = sx;
+        e_cy = sy;
+    }
+
+    int size = 0;
+    for (int i = s_cy; i <= e_cy; i++)
+    {
+        int ts = i == s_cy ? s_cx : 0;
+        int te = i == e_cy ? e_cx : E.row[i].size;
+        size += te - ts + 1;
+    }
+
+    clipBoard = realloc(clipBoard, size);
+    size = 0;
+    for (int i = s_cy; i <= e_cy; i++)
+    {
+        int ts = i == s_cy ? s_cx : 0;
+        int te = i == e_cy ? e_cx : E.row[i].size;
+        memcpy(clipBoard + size, E.row[i].chars + ts, te - ts);
+        clipBoard[size + te - ts] = '\n';
+        size += te - ts + 1;
+    }
+    clipBoard[size - 1] = '\0';
+}
+
+void editorPaste() {
+    if (!clipBoard) return;
+    int size = strlen(clipBoard);
+    for (int i = 0; i < size; i++)
+    {
+        if (clipBoard[i] == '\n')
+            editorInsertNewline();
+        else
+            editorInsertChar(clipBoard[i]);
+    }
+}
+
+void editorCut(int sx, int sy, int ex, int ey) {
+}
+
+void editorSelectArea(int fd) {
+    /* Save the cursor position. */
+    int saved_cx = E.cx, saved_cy = E.cy;
+    int new_cx = E.cx, new_cy = E.cy;
+
+    while(1) {
+        editorRefreshScreen();
+
+        int c = editorReadKey(fd);
+        if (c >= ARROW_LEFT && c <= PAGE_DOWN) {
+            editorMoveCursor(c);
+        } else if (c == ESC || c == ENTER) {
+            editorSetStatusMessage("");
+            reverseSelectArea(saved_cx, saved_cy, E.cx, E.cy);
+            return;
+        } else if (c == CTRL_C) {
+            editorCopy(saved_cx, saved_cy, E.cx, E.cy);
+            continue;
+        }
+        reverseSelectArea(saved_cx, saved_cy, new_cx, new_cy);
+        reverseSelectArea(saved_cx, saved_cy, E.cx, E.cy);
+        new_cx = E.cx;
+        new_cy = E.cy;
     }
 }
 
@@ -1117,7 +1220,7 @@ void editorMoveCursor(int key) {
     case ARROW_LEFT:
         if (E.cx == 0 && E.cy) {
             E.cy--;
-            E.cx = E.row[E.cy - 1].size;
+            E.cx = E.row[E.cy].size;
         } else {
             E.cx--;
         }
@@ -1149,6 +1252,15 @@ void editorMoveCursor(int key) {
     case END_KEY:
         E.cx = row->size;
         break;
+    case PAGE_UP:
+    case PAGE_DOWN:
+        {
+            int times = E.screenrows;
+            while(times--)
+                editorMoveCursor(key == PAGE_UP ? ARROW_UP:
+                                                ARROW_DOWN);
+        }
+        break;
     }
     
     fixCursorPostion();
@@ -1166,6 +1278,9 @@ void editorProcessKeypress(int fd) {
     switch(c) {
     case ENTER:         /* Enter */
         editorInsertNewline();
+        break;
+    case CTRL_A:
+        editorSelectArea(fd);
         break;
     case CTRL_C:        /* Ctrl-c */
         /* We ignore ctrl-c, it can't be so simple to lose the changes
@@ -1187,6 +1302,9 @@ void editorProcessKeypress(int fd) {
     case CTRL_F:
         editorFind(fd);
         break;
+    case CTRL_V:
+        editorPaste();
+        break;
     case BACKSPACE:     /* Backspace */
     case CTRL_H:        /* Ctrl-h */
     case DEL_KEY:
@@ -1194,13 +1312,6 @@ void editorProcessKeypress(int fd) {
         break;
     case PAGE_UP:
     case PAGE_DOWN:
-        {
-        int times = E.screenrows;
-        while(times--)
-            editorMoveCursor(c == PAGE_UP ? ARROW_UP:
-                                            ARROW_DOWN);
-        }
-        break;
     case HOME_KEY:
     case END_KEY:
     case ARROW_UP:
@@ -1228,15 +1339,6 @@ int editorFileWasModified(void) {
 }
 
 void initEditor(void) {
-    E.cx = 0;
-    E.cy = 0;
-    E.rowoff = 0;
-    E.coloff = 0;
-    E.numrows = 0;
-    E.row = NULL;
-    E.dirty = 0;
-    E.filename = NULL;
-    E.syntax = NULL;
     if (getWindowSize(STDIN_FILENO,STDOUT_FILENO,
                       &E.screenrows,&E.screencols) == -1)
     {
