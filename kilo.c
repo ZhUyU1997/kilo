@@ -124,6 +124,7 @@ enum KEY_ACTION {
         CTRL_S = 19,        /* Ctrl-s */
         CTRL_U = 21,        /* Ctrl-u */
         CTRL_V = 22,        /* Ctrl-v */
+        CTRL_X = 24,        /* Ctrl-x */
         ESC = 27,           /* Escape */
         BACKSPACE =  127,   /* Backspace */
         /* The following are just soft codes, not really reported by the
@@ -771,8 +772,8 @@ fixcursor:
     fixCursorPostion();
 }
 
-/* Delete the char at the current prompt position. */
-void editorDelChar() {
+/* Delete the char at the next prompt position. */
+void editorBackSpace() {
     int filerow = E.cy;
     int filecol = E.cx;
     erow *row = &E.row[filerow];
@@ -784,15 +785,34 @@ void editorDelChar() {
         filecol = E.row[filerow-1].size;
         editorRowAppendString(&E.row[filerow-1],row->chars,row->size);
         editorDelRow(filerow);
-        row = NULL;
         E.cy--;
         E.cx = filecol;
     } else {
         editorRowDelChar(row,filecol-1);
         E.cx--;
     }
+    editorUpdateRow(row);
     fixCursorPostion();
-    if (row) editorUpdateRow(row);
+    E.dirty++;
+}
+
+/* Delete the char at the current prompt position. */
+void editorDelChar() {
+    int filerow = E.cy;
+    int filecol = E.cx;
+    erow *row = &E.row[filerow];
+
+    if (!row || (filecol == E.row[E.numrows - 1].size && filerow == E.numrows - 1)) return;
+    if (filecol == row->size) {
+        /* Handle the case of column 0, we need to move the current line
+         * on the right of the previous one. */
+        editorRowAppendString(&E.row[filerow],E.row[filerow + 1].chars,E.row[filerow + 1].size);
+        editorDelRow(filerow + 1);
+    } else {
+        editorRowDelChar(row,filecol);
+    }
+    editorUpdateRow(row);
+    fixCursorPostion();
     E.dirty++;
 }
 
@@ -1182,6 +1202,18 @@ void editorPaste() {
 }
 
 void editorCut(int sx, int sy, int ex, int ey) {
+    int v = ey - sy + (ey - sy == 0 ? ex - sx : 0);
+    editorCopy(sx, sy, ex, ey);
+    if (!clipBoard) return;
+    int size = strlen(clipBoard);
+    if (v < 0) {
+        for (int i = 0; i < size; i++)
+            editorDelChar(clipBoard[i]);
+    } else {
+        for (int i = 0; i < size; i++)
+            editorBackSpace(clipBoard[i]);
+    }
+
 }
 
 void editorSelectArea(int fd) {
@@ -1202,6 +1234,9 @@ void editorSelectArea(int fd) {
         } else if (c == CTRL_C) {
             editorCopy(saved_cx, saved_cy, E.cx, E.cy);
             continue;
+        } else if (c == CTRL_X) {
+            editorCut(saved_cx, saved_cy, E.cx, E.cy);
+            return;;
         }
         reverseSelectArea(saved_cx, saved_cy, new_cx, new_cy);
         reverseSelectArea(saved_cx, saved_cy, E.cx, E.cy);
@@ -1306,6 +1341,8 @@ void editorProcessKeypress(int fd) {
         editorPaste();
         break;
     case BACKSPACE:     /* Backspace */
+        editorBackSpace();
+        break;
     case CTRL_H:        /* Ctrl-h */
     case DEL_KEY:
         editorDelChar();
