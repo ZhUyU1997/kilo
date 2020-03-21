@@ -942,7 +942,9 @@ void editorBackSpace()
         editorRowDelChar(row, filecol - 1);
         E.cx--;
     }
-    editorUpdateRow(row);
+
+    if (filerow < E.numrows)
+        editorUpdateRow(row);
     fixCursorPostion();
     E.dirty++;
 }
@@ -967,7 +969,9 @@ void editorDelChar()
     {
         editorRowDelChar(row, filecol);
     }
-    editorUpdateRow(row);
+
+    if (filerow < E.numrows)
+        editorUpdateRow(row);
     fixCursorPostion();
     E.dirty++;
 }
